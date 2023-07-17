@@ -1,4 +1,5 @@
 %% Copyright 2011 Steve Davis <steve@simulacity.com>
+%% Copyright 2023 Erik Reitsma
 %
 % Licensed under the Apache License, Version 2.0 (the "License");
 % you may not use this file except in compliance with the License.
@@ -17,19 +18,16 @@
 -include("qrcode.hrl").
 -include("qrcode_params.hrl").
 
--export([encode/1, encode/2, decode/1]).
--export([encode_alphanum/2, encode_num/2]).
-%%
-decode(_Bin) ->
-	{error, not_implemented}.
+-export([encode/1, encode/2]).
+-export([cci/2]).
 
 %%
 encode(Bin) ->
 	encode(Bin, 'M').
 %
-encode(Bin, ECC) when is_binary(Bin) ->
+encode(Bin, ECC) ->
 	Params = choose_qr_params(Bin, ECC),
-	Content = encode_content(Params, Bin),
+	Content = encode_content(Params, Params#qr_params.data),
 	BlocksWithECC = generate_ecc_blocks(Params, Content),
 	Codewords = interleave_blocks(BlocksWithECC),
 	Matrix = qrcode_matrix:embed_data(Params, Codewords),
@@ -41,47 +39,34 @@ encode(Bin, ECC) when is_binary(Bin) ->
 	VSN = version_info_bits(Params0),
 	#qr_params{version = Version, dimension = Dim, ec_level = _ECC} = Params0,
 	QRCode = qrcode_matrix:finalize(Dim, FMT, VSN, ?QUIET_ZONE, SelectedMatrix),
-	%% NOTE: Added "API" record
 	#qrcode{version = Version, ecc = ECC, dimension = Dim + ?QUIET_ZONE * 2, data = QRCode}.
 
 %%
 choose_qr_params(Bin, ECLevel) ->
-	Mode = choose_encoding(Bin),
-	{Mode, Version, ECCBlockDefs, Remainder} = choose_version(Mode, ECLevel, byte_size(Bin)),
+	{Version, Data, _DataSize} = qrcode_mix:mix(Bin, ECLevel),
+	{ECCBlockDefs, Remainder} = version_info(Version, ECLevel),
 	AlignmentCoords = alignment_patterns(Version),
 	Dim = qrcode_matrix:dimension(Version),
-	#qr_params{mode = Mode, version = Version, dimension = Dim, ec_level = ECLevel,
-		block_defs = ECCBlockDefs, align_coords = AlignmentCoords, remainder = Remainder, data = Bin}.
-
-%% NOTE: byte mode only (others removed)
-choose_encoding(_Bin) ->
-	alphanum.
+	#qr_params{mode = mixed, version = Version, dimension = Dim, ec_level = ECLevel,
+		block_defs = ECCBlockDefs, align_coords = AlignmentCoords, remainder = Remainder, data = Data}.
 
 %%
-choose_version(Type, ECC, Length) ->
-	choose_version(Type, ECC, Length, ?TABLES).
-%
-choose_version(byte, ECC, Length, [{{ECC, Version}, {_, _, Capacity, _}, ECCBlocks, Remainder}|_])
-		when Capacity >= Length ->
-	{byte, Version, ECCBlocks, Remainder};
-choose_version(alphanum, ECC, Length, [{{ECC, Version}, {_, Capacity, _, _}, ECCBlocks, Remainder}|_])
-		when Capacity >= Length ->
-	{alphanum, Version, ECCBlocks, Remainder};
-choose_version(num, ECC, Length, [{{ECC, Version}, {Capacity, _, _, _}, ECCBlocks, Remainder}|_])
-		when Capacity >= Length ->
-	{num, Version, ECCBlocks, Remainder};
-choose_version(Type, ECC, Length, [_|T]) ->
-	choose_version(Type, ECC, Length, T).
+version_info(Version, ECC) ->
+	{value, {_, _, ECCBlocks, Remainder, _}} =
+		lists:keysearch({ECC, Version}, 1, ?TABLES),
+	{ECCBlocks, Remainder}.
 
 %%
 encode_content(#qr_params{mode = Mode, version = Version}, Bin) ->
 	pad_to_bytes(encode_content(Mode, Version, Bin)).
 %
-encode_content(alphanum, Version, Bin) ->
+encode_content(mixed, Version, List) when is_list(List) ->
+	<< <<(encode_content(Type, Version, Bytes))/bits>> || {Type, Bytes} <- List>>;
+encode_content(?ALPHANUMERIC_MODE, Version, Bin) ->
 	encode_alphanum(Version, Bin);
-encode_content(num, Version, Bin) ->
+encode_content(?NUMERIC_MODE, Version, Bin) ->
 	encode_num(Version, Bin);
-encode_content(byte, Version, Bin) ->
+encode_content(?BYTE_MODE, Version, Bin) ->
 	encode_bytes(Version, Bin).
 
 %%
@@ -150,43 +135,42 @@ interleave_blocks([<<X, Data/binary>>|T], Acc, Bin) ->
 	interleave_blocks(T, [Data|Acc], <<Bin/binary, X>>).
 
 %
-encode_bytes(Version, Bin) when is_binary(Bin) ->
+encode_bytes(Version, B) ->
+	Bin = list_to_binary(B),
 	Size = size(Bin),
 	CharacterCountBitSize = cci(?BYTE_MODE, Version),
-	<<?BYTE_MODE:4, Size:CharacterCountBitSize, Bin/binary, 0:4>>.
+	<<?BYTE_MODE:4, Size:CharacterCountBitSize, Bin/binary>>.
 
-encode_alphanum(Version, Bin) when is_binary(Bin) ->
-	Size = size(Bin),
+encode_alphanum(Version, A) ->
+	Size = length(A),
 	CharacterCountBitSize = cci(?ALPHANUMERIC_MODE, Version),
-	Bits = alphanum_to_bits(Bin),
+	Bits = alphanum_to_bits(A),
 	<<?ALPHANUMERIC_MODE:4, Size:CharacterCountBitSize, Bits/bits>>.
 
-
-alphanum_to_bits(<<B>>) ->
+alphanum_to_bits([B]) ->
 	Value = alpha_value(B),
 	<<Value:6>>;
-alphanum_to_bits(<<>>) ->
+alphanum_to_bits([]) ->
 	<<>>;
-alphanum_to_bits(<<B1, B2, More/bytes>>) ->
+alphanum_to_bits([B1, B2 | More]) ->
 	MoreBits = alphanum_to_bits(More),
-	io:format("~p, ~p: ~s~n", [alpha_value(B1), alpha_value(B2), erlang:integer_to_list((alpha_value(B1) * 45) + alpha_value(B2), 2)]),
 	<<((alpha_value(B1) * 45) + alpha_value(B2)):11, MoreBits/bits>>.
 
-encode_num(Version, Bin) when is_binary(Bin) ->
-	Size = size(Bin),
+encode_num(Version, N) ->
+	Size = length(N),
 	CharacterCountBitSize = cci(?NUMERIC_MODE, Version),
-	Bits = num_to_bits(Bin),
+	Bits = num_to_bits(N),
 	<<?NUMERIC_MODE:4, Size:CharacterCountBitSize, Bits/bits>>.
 
-num_to_bits(<<>>) ->
+num_to_bits([]) ->
 	<<>>;
-num_to_bits(<<B>>) ->
+num_to_bits([B]) ->
 	<<(B - $0):4>>;
-num_to_bits(<<B1, B2>>) ->
+num_to_bits([B1, B2]) ->
 	N1 = B1 - $0,
 	N2 = B2 - $0,
 	<<(N1 * 10 + N2):7>>;
-num_to_bits(<<B1, B2, B3, More/bytes>>) ->
+num_to_bits([B1, B2, B3 | More]) ->
 	MoreBits = num_to_bits(More),
 	N1 = B1 - $0,
 	N2 = B2 - $0,
@@ -250,64 +234,6 @@ format_info_bits(#qr_params{ec_level = ECLevel, mask = MaskType}) ->
 	InfoWithEC = (Info bsl 10) bor BCH,
 	Value = InfoWithEC bxor ?FORMAT_INFO_MASK,
 	<<Value:15>>.
-
-%% Optimised encoding based on Annex H of ISO/IEC 18004:2000
-%% No Kanji support.
-
-%% Convert version number to index in tuple
-version_to_index(V) when V < 10 ->
-	1;
-version_to_index(V) when V < 27 ->
-	2;
-version_to_index(V) when V < 41 ->
-	3.
-
-run_count(_Mode, <<>>) ->
-	0;
-run_count(num, <<C, More/bytes>>) ->
-	case char_is_num(C) of
-		true ->
-			1 + run_count(num, More);
-		_ ->
-			0
-	end;
-run_count(alpha, <<C, More/bytes>>) ->
-	case char_is_alpha(C) of
-		true ->
-			1 + run_count(alpha, More);
-		_ ->
-			0
-	end.
-
-char_is_num(C) when C >= $0, C =< $9 ->
-	true;
-char_is_num(_C) ->
-	false.
-
-char_is_alpha(C) when C >= $0, C =< $9 ->
-	true;
-char_is_alpha(C) when C >= $A, C =< $Z ->
-	true;
-char_is_alpha($ ) ->
-	true;
-char_is_alpha($$) ->
-	true;
-char_is_alpha($%) ->
-	true;
-char_is_alpha($*) ->
-	true;
-char_is_alpha($+) ->
-	true;
-char_is_alpha($-) ->
-	true;
-char_is_alpha($.) ->
-	true;
-char_is_alpha($/) ->
-	true;
-char_is_alpha($:) ->
-	true;
-char_is_alpha(_C) ->
-	false.
 
 alpha_value(C) when C >= $0, C =< $9 ->
 	C - $0;
