@@ -58,7 +58,8 @@ version_info(Version, ECC) ->
 
 %%
 encode_content(#qr_params{mode = Mode, version = Version}, Bin) ->
-	pad_to_bytes(encode_content(Mode, Version, Bin)).
+	Encoded = encode_content(Mode, Version, Bin),
+	pad_to_bytes(Encoded).
 %
 encode_content(mixed, Version, List) when is_list(List) ->
 	<< <<(encode_content(Type, Version, Bytes))/bits>> || {Type, Bytes} <- List>>;
@@ -175,7 +176,7 @@ num_to_bits([B1, B2, B3 | More]) ->
 	N1 = B1 - $0,
 	N2 = B2 - $0,
 	N3 = B3 - $0,
-	<<(N1 * 100 + N2 * 10 + N3):11, MoreBits/bits>>.
+	<<(N1 * 100 + N2 * 10 + N3):10, MoreBits/bits>>.
 %% Table 25. Error correction level indicators
 ecc('L') -> 1;
 ecc('M') -> 0;
