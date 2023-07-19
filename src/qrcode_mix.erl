@@ -52,7 +52,8 @@ mix_attempt(Text, ECC, Version) ->
 mix_version(Text, Version) when is_binary(Text) ->
     mix_version(binary_to_list(Text), Version);
 mix_version(Text, Version) ->
-    mix_version(Version, #node{remaining = bytes_to_modes(Text)}, [], 0, #{}).
+    %% start with distance 4 for the terminator
+    mix_version(Version, #node{remaining = bytes_to_modes(Text)}, [], 4, #{}).
 
 mix_version(_Version, #node{remaining = []}, CurrentPath, DistanceToCurrent, _Unhandled) ->
     {lists:reverse(CurrentPath), DistanceToCurrent};

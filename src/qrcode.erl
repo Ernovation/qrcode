@@ -58,7 +58,8 @@ version_info(Version, ECC) ->
 
 %%
 encode_content(#qr_params{mode = Mode, version = Version}, Bin) ->
-	Encoded = encode_content(Mode, Version, Bin),
+	%% add a 0 for the terminator
+	Encoded = << (encode_content(Mode, Version, Bin))/bits, 0:4>>,
 	pad_to_bytes(Encoded).
 %
 encode_content(mixed, Version, List) when is_list(List) ->
